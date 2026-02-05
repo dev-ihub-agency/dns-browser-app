@@ -176,6 +176,9 @@ function AppNavigator() {
   const { theme, isDarkMode } = useTheme();
   const [currentScreen, setCurrentScreen] = React.useState('Home');
 
+  // Only show Telegram Float in WARP mode
+  const showTelegramFloat = mode === 'Warp';
+
   return (
     <View style={{ flex: 1 }}>
     <Tab.Navigator
@@ -297,7 +300,7 @@ function AppNavigator() {
         </>
       )}
     </Tab.Navigator>
-    <TelegramFloatButton currentScreen={currentScreen} />
+    {showTelegramFloat && <TelegramFloatButton currentScreen={currentScreen} />}
     </View>
   );
 }

@@ -4,115 +4,84 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.nio.ByteBuffer;
 
 /**
- * DnsVpnService - VPN service for DNS bypass
+ * DnsVpnService - Simple DNS-only VPN service
  *
- * This service creates a local VPN tunnel that routes DNS queries through
- * the selected DNS server (1.1.1.1 or 8.8.8.8), bypassing ISP DNS blocking.
- *
- * Installation:
- * 1. Copy this file to: android/app/src/main/java/com/dnsbrowserapp/DnsVpnService.java
- * 2. Add service declaration to AndroidManifest.xml (see below)
+ * This VPN only sets custom DNS servers without routing any traffic.
+ * The trick is to use a dummy route that won't match any real traffic,
+ * but still allows Android to apply our DNS settings.
  */
 public class DnsVpnService extends VpnService {
     private static final String TAG = "DnsVpnService";
-    public static boolean isRunning = false; // Track VPN status
+    public static boolean isRunning = false;
     private ParcelFileDescriptor vpnInterface = null;
-    private Thread vpnThread = null;
-    private String dnsServer = "1.1.1.1"; // Default to Cloudflare
+    private String dnsServer = "1.1.1.1";
+
+    public static final String ACTION_STOP = "com.dnsbrowser.app.STOP_VPN";
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // Get DNS server from intent
+        // Check if this is a stop command
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            Log.d(TAG, "Received stop command");
+            stop();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         if (intent != null && intent.hasExtra("dns_server")) {
             dnsServer = intent.getStringExtra("dns_server");
             Log.d(TAG, "Starting VPN with DNS server: " + dnsServer);
         }
 
-        // Stop existing VPN if running
         stop();
 
-        // Build VPN interface
-        Builder builder = new Builder();
-        builder.setSession("DNS Browser VPN");
-        builder.addAddress("10.0.0.2", 24); // VPN local address
-        builder.addRoute("0.0.0.0", 0);     // Route all traffic
-        builder.addDnsServer(dnsServer);     // Primary DNS
-        builder.setBlocking(false);
-
-        // Add secondary DNS based on primary
-        if (dnsServer.equals("1.1.1.1")) {
-            builder.addDnsServer("1.0.0.1"); // Cloudflare secondary
-        } else if (dnsServer.equals("8.8.8.8")) {
-            builder.addDnsServer("8.8.4.4"); // Google secondary
-        }
-
         try {
+            // Build minimal VPN interface - DNS settings only
+            Builder builder = new Builder();
+            builder.setSession("DNS Browser");
+            
+            // VPN interface needs an address
+            builder.addAddress("10.255.255.1", 32);
+            
+            // Add a dummy route for a non-routable address
+            // This makes the VPN "active" without routing any real traffic
+            // 0.0.0.0/32 is a dummy route that won't match any traffic
+            builder.addRoute("0.0.0.0", 32);
+            
+            // Set our custom DNS servers - this is the key part!
+            builder.addDnsServer(dnsServer);
+            if (dnsServer.equals("1.1.1.1")) {
+                builder.addDnsServer("1.0.0.1");
+            } else if (dnsServer.equals("8.8.8.8")) {
+                builder.addDnsServer("8.8.4.4");
+            }
+            
+            // MTU setting
+            builder.setMtu(1500);
+            
+            // Establish VPN
             vpnInterface = builder.establish();
+            
             if (vpnInterface == null) {
                 Log.e(TAG, "Failed to establish VPN interface");
+                isRunning = false;
                 return START_NOT_STICKY;
             }
 
-            Log.d(TAG, "VPN interface established successfully");
+            Log.d(TAG, "VPN established successfully - DNS: " + dnsServer);
             isRunning = true;
-
-            // Start VPN thread to handle packets
-            vpnThread = new Thread(this::runVpn, "VpnThread");
-            vpnThread.start();
+            
+            // No need for a read thread since we're not routing any traffic
+            // The VPN interface just needs to stay open for DNS settings to apply
 
             return START_STICKY;
         } catch (Exception e) {
             Log.e(TAG, "Error establishing VPN", e);
+            isRunning = false;
             return START_NOT_STICKY;
-        }
-    }
-
-    /**
-     * Main VPN packet handling loop
-     * This is a simplified implementation - for production, you would
-     * need proper packet routing and DNS query handling
-     */
-    private void runVpn() {
-        try {
-            FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
-            FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
-
-            ByteBuffer packet = ByteBuffer.allocate(32767);
-            int length;
-
-            Log.d(TAG, "VPN thread started");
-
-            while (!Thread.interrupted()) {
-                // Read packet from VPN interface
-                packet.clear();
-                length = in.read(packet.array());
-
-                if (length > 0) {
-                    packet.limit(length);
-
-                    // In a full implementation, you would:
-                    // 1. Parse the packet
-                    // 2. If it's a DNS query, forward to selected DNS server
-                    // 3. Receive DNS response
-                    // 4. Send response back through VPN interface
-
-                    // For now, this is a basic pass-through
-                    // The DNS server configuration is handled by Android's VPN framework
-                }
-            }
-
-            Log.d(TAG, "VPN thread stopped");
-        } catch (IOException e) {
-            Log.e(TAG, "VPN thread error", e);
         }
     }
 
@@ -120,14 +89,10 @@ public class DnsVpnService extends VpnService {
      * Stop VPN service
      */
     private void stop() {
-        if (vpnThread != null) {
-            vpnThread.interrupt();
-            vpnThread = null;
-        }
-
         if (vpnInterface != null) {
             try {
                 vpnInterface.close();
+                Log.d(TAG, "VPN interface closed");
             } catch (IOException e) {
                 Log.e(TAG, "Error closing VPN interface", e);
             }
@@ -152,22 +117,15 @@ public class DnsVpnService extends VpnService {
     }
 }
 
-/**
- * AndroidManifest.xml configuration:
- *
- * Add this inside <application> tag:
- *
- * <service
- *     android:name=".DnsVpnService"
- *     android:permission="android.permission.BIND_VPN_SERVICE"
- *     android:exported="false">
- *     <intent-filter>
- *         <action android:name="android.net.VpnService" />
- *     </intent-filter>
- * </service>
- *
- * Add these permissions before <application> tag:
- *
- * <uses-permission android:name="android.permission.INTERNET" />
- * <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
+/*
+ * How this works:
+ * 
+ * This is a "DNS-only" VPN that doesn't route any actual traffic:
+ * 1. We create a VPN interface with a dummy route (0.0.0.0/32)
+ * 2. The dummy route won't match any real traffic
+ * 3. But Android still applies our DNS server settings
+ * 4. All apps will use our custom DNS (1.1.1.1 or 8.8.8.8)
+ * 5. Regular internet traffic flows normally through the default route
+ * 
+ * This bypasses ISP DNS blocking without affecting network performance.
  */

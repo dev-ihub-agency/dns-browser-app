@@ -68,8 +68,14 @@ public class VpnModule extends ReactContextBaseJavaModule implements ActivityEve
     public void stopVpn(Promise promise) {
         Activity activity = getCurrentActivity();
         if (activity != null) {
+            // Send stop action to the service
             Intent intent = new Intent(activity, DnsVpnService.class);
-            activity.stopService(intent);
+            intent.setAction(DnsVpnService.ACTION_STOP);
+            activity.startService(intent);
+            
+            // Also try to stop the service directly
+            activity.stopService(new Intent(activity, DnsVpnService.class));
+            
             promise.resolve(true);
         } else {
             promise.reject("NO_ACTIVITY", "Activity not available");
